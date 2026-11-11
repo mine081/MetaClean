@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="pt-BR" data-auth="required">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MetaClean — Limpador de Metadados de Vídeo</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --txt:#e8eaf0; --mut:#8b92a3; --acc:#7c5cff; --ok:#2ecc71; --err:#ff5c5c; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:760px; width:100%; margin:0 auto; padding:24px 16px 60px; }
+  h1 { font-size:1.5rem; margin:0 0 4px; }
+  p.sub { color:var(--mut); margin:0 0 20px; }
+  #drop { display:block; width:100%; border:2px dashed var(--line); border-radius:14px; padding:36px 16px; text-align:center; cursor:pointer; background:var(--card); transition:.15s; }
+  #drop span { display:block; }
+  #drop.over { border-color:var(--acc); background:#1d1b2e; }
+  #drop strong { display:block; font-size:1.1rem; margin-bottom:4px; }
+  #drop span { color:var(--mut); font-size:.9rem; }
+  .bar { display:flex; gap:10px; flex-wrap:wrap; margin:16px 0; }
+  button { background:var(--acc); color:#fff; border:0; border-radius:10px; padding:11px 18px; font:inherit; font-weight:600; cursor:pointer; }
+  button.sec { background:var(--card); border:1px solid var(--line); color:var(--txt); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  ul { list-style:none; padding:0; margin:0; display:grid; gap:8px; }
+  li { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 14px; display:flex; align-items:center; gap:12px; }
+  li .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  li .info { color:var(--mut); font-size:.85rem; white-space:nowrap; }
+  li .st.ok { color:var(--ok); } li .st.err { color:var(--err); }
+  li a { color:var(--acc); font-weight:600; text-decoration:none; font-size:.9rem; }
+  .note { margin-top:24px; color:var(--mut); font-size:.88rem; border-top:1px solid var(--line); padding-top:14px; }
+  .note b { color:var(--txt); }
+</style>
+</head>
+<body>
+<div id="mc-header"></div>
+<main>
+  <h1>Limpador de Metadados de Vídeo</h1>
+  <p class="sub">Remove GPS, dispositivo, software de edição e datas dos vídeos. Sem recodificar: <b>zero perda de qualidade</b> e muito rápido.</p>
+
+  <label id="drop">
+    <strong>Arraste os vídeos aqui ou toque para escolher</strong>
+    <span>MP4 / MOV / M4V — quantos quiser (10+ sem problema)</span>
+    <input id="file" type="file" accept="video/mp4,video/quicktime,video/x-m4v,.mp4,.mov,.m4v" multiple hidden>
+  </label>
+
+  <div class="bar">
+    <button id="go" disabled>Limpar metadados</button>
+    <button id="zip" class="sec" disabled>Baixar tudo (ZIP)</button>
+    <button id="clear" class="sec" disabled>Limpar lista</button>
+  </div>
+
+  <ul id="list"></ul>
+
+  <div class="note">
+    <b>O que é removido:</b> blocos <code>udta</code> e <code>meta</code> (localização GPS, modelo do aparelho, software, tags), blocos XMP/<code>uuid</code> e datas de criação/modificação.<br>
+    <b>Privacidade:</b> tudo acontece no seu navegador; nada é enviado para internet.<br>
+    <b>Limitação:</b> funciona com arquivos da família MP4/MOV. WebM/MKV/AVI não são suportados.
+  </div>
+</main>
+<div id="mc-footer"></div>
+
+<script src="/config.js"></script>
+<script type="module" src="/app.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const drop = $('drop'), input = $('file'), list = $('list');
+  const goBtn = $('go'), zipBtn = $('zip'), clearBtn = $('clear');
+  let items = []; // {file, li, result: {blob, name}}
+
+  const fmt = n => n > 1048576 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB';
+  const ascii = (dv, o) => String.fromCharCode(dv.getUint8(o),dv.getUint8(o+1),dv.getUint8(o+2),dv.getUint8(o+3));
+
+  /* ---------- Núcleo: limpeza de MP4/MOV ---------- */
+  const CONTAINERS = new Set(['moov','trak','mdia','minf','stbl']);
+  const DROP_TOP = new Set(['meta','udta','uuid','free','skip','wide']);
+
+  function parseBoxes(buf, start, end) {
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const out = [];
+    let p = start;
+    while (p + 8 <= end) {
+      let size = dv.getUint32(p), hdr = 8;
+      const type = ascii(dv, p+4);
+      if (size === 1) { size = Number(dv.getBigUint64(p+8)); hdr = 16; }
+      else if (size === 0) size = end - p;
+      if (size < hdr || p + size > end) break;
+      out.push({type, start:p, size, hdr});
+      p += size;
+    }
+    return out;
+  }
+
+  function concat(chunks) {
+    const len = chunks.reduce((a,c)=>a+c.length,0);
+    const r = new Uint8Array(len); let o = 0;
+    for (const c of chunks) { r.set(c, o); o += c.length; }
+    return r;
+  }
+
+  function zeroTimes(box) { // mvhd / tkhd / mdhd
+    const dv = new DataView(box.buffer, box.byteOffset, box.byteLength);
+    const version = dv.getUint8(8);
+    const n = version === 1 ? 16 : 8;
+    for (let i = 0; i < n; i++) dv.setUint8(12 + i, 0);
+  }
+
+  function strip(buf, start, end, parent) {
+    const chunks = [];
+    for (const b of parseBoxes(buf, start, end)) {
+      if ((parent === 'moov' || parent === 'trak') && (b.type === 'udta' || b.type === 'meta')) continue;
+      if (CONTAINERS.has(b.type)) {
+        const inner = strip(buf, b.start + b.hdr, b.start + b.size, b.type);
+        const head = new Uint8Array(8);
+        new DataView(head.buffer).setUint32(0, 8 + inner.length);
+        head.set(buf.subarray(b.start+4, b.start+8), 4);
+        chunks.push(head, inner);
+      } else {
+        const copy = buf.slice(b.start, b.start + b.size);
+        if (b.type === 'mvhd' || b.type === 'tkhd' || b.type === 'mdhd') zeroTimes(copy);
+        chunks.push(copy);
+      }
+    }
+    return concat(chunks);
+  }
+
+  function patchOffsets(buf, start, end, mapFn) {
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    for (const b of parseBoxes(buf, start, end)) {
+      if (CONTAINERS.has(b.type)) patchOffsets(buf, b.start + b.hdr, b.start + b.size, mapFn);
+      else if (b.type === 'stco' || b.type === 'co64') {
+        const wide = b.type === 'co64';
+        const count = dv.getUint32(b.start + b.hdr + 4);
+        let p = b.start + b.hdr + 8;
+        for (let i = 0; i < count; i++, p += wide ? 8 : 4) {
+          if (wide) dv.setBigUint64(p, BigInt(mapFn(Number(dv.getBigUint64(p)))));
+          else dv.setUint32(p, mapFn(dv.getUint32(p)));
+        }
+      }
+    }
+  }
+
+  async function cleanFile(file) {
+    // 1) lista de caixas de nível superior (lendo só os cabeçalhos)
+    const top = [];
+    let pos = 0;
+    while (pos + 8 <= file.size) {
+      const dv = new DataView(await file.slice(pos, pos + 16).arrayBuffer());
+      let size = dv.getUint32(0), hdr = 8;
+      const type = ascii(dv, 4);
+      if (size === 1) { size = Number(dv.getBigUint64(8)); hdr = 16; }
+      else if (size === 0) size = file.size - pos;
+      if (size < hdr || pos + size > file.size) break;
+      top.push({type, start:pos, size, hdr});
+      pos += size;
+    }
+    const moovBox = top.find(b => b.type === 'moov');
+    if (!moovBox || !top.some(b => b.type === 'mdat')) throw new Error('formato não suportado');
+
+    // 2) reescreve o moov sem metadados
+    const moovOld = new Uint8Array(await file.slice(moovBox.start, moovBox.start + moovBox.size).arrayBuffer());
+    const inner = strip(moovOld, moovBox.hdr, moovOld.length, 'moov');
+    const newMoov = new Uint8Array(8 + inner.length);
+    new DataView(newMoov.buffer).setUint32(0, newMoov.length);
+    newMoov.set([0x6d,0x6f,0x6f,0x76], 4);
+    newMoov.set(inner, 8);
+
+    // 3) novo layout e correção dos offsets dos chunks (stco/co64)
+    const kept = top.filter(b => b.type === 'moov' || !DROP_TOP.has(b.type));
+    let np = 0; const mdats = [];
+    for (const b of kept) {
+      b.newStart = np;
+      b.newSize = b.type === 'moov' ? newMoov.length : b.size;
+      if (b.type === 'mdat') mdats.push({oldS:b.start, oldE:b.start + b.size, newS:np});
+      np += b.newSize;
+    }
+    patchOffsets(newMoov, 8, newMoov.length, o => {
+      const m = mdats.find(m => o >= m.oldS && o < m.oldE);
+      return m ? o + (m.newS - m.oldS) : o;
+    });
+
+    // 4) monta o arquivo final sem carregar o vídeo na memória
+    const parts = kept.map(b => b.type === 'moov' ? newMoov : file.slice(b.start, b.start + b.size));
+    const type = file.type || 'video/mp4';
+    // copia para a memória: evita "erro de rede" no download de blobs que dependem do arquivo original
+    const data = await new Blob(parts).arrayBuffer();
+    return new Blob([data], {type});
+  }
+
+  /* ---------- Interface ---------- */
+  function cleanName(n) {
+    const i = n.lastIndexOf('.');
+    return (i > 0 ? n.slice(0, i) : n) + '_limpo' + (i > 0 ? n.slice(i) : '.mp4');
+  }
+
+  function addFiles(files) {
+    for (const f of files) {
+      if (items.some(i => i.file.name === f.name && i.file.size === f.size)) continue;
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="name"></span><span class="info"></span><span class="st"></span>';
+      li.querySelector('.name').textContent = f.name;
+      li.querySelector('.info').textContent = fmt(f.size);
+      list.appendChild(li);
+      items.push({file:f, li, result:null});
+    }
+    refresh();
+  }
+
+  function refresh() {
+    const pending = items.some(i => !i.result);
+    goBtn.disabled = !pending;
+    zipBtn.disabled = !items.some(i => i.result);
+    clearBtn.disabled = !items.length;
+  }
+
+  function setStatus(it, text, cls) {
+    const st = it.li.querySelector('.st');
+    st.textContent = text; st.className = 'st ' + (cls || '');
+  }
+
+  function download(blob, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 300000);
+  }
+
+  goBtn.onclick = async () => {
+    goBtn.disabled = true;
+    for (const it of items) {
+      if (it.result) continue;
+      setStatus(it, 'processando…');
+      try {
+        const blob = await cleanFile(it.file);
+        it.result = {blob, name: cleanName(it.file.name)};
+        const saved = it.file.size - blob.size;
+        setStatus(it, '✓ limpo (−' + fmt(Math.max(saved,0)) + ')', 'ok');
+        const a = document.createElement('a');
+        a.href = '#'; a.textContent = 'Baixar';
+        a.onclick = e => { e.preventDefault(); download(blob, it.result.name); };
+        it.li.appendChild(a);
+      } catch (e) {
+        setStatus(it, '✗ ' + e.message, 'err');
+      }
+      refresh();
+    }
+    refresh();
+  };
+
+  zipBtn.onclick = async () => {
+    const done = items.filter(i => i.result);
+    if (!done.length) return;
+    if (typeof JSZip === 'undefined') { alert('Biblioteca ZIP não carregou (sem internet?). Use os botões "Baixar" individuais.'); return; }
+    zipBtn.disabled = true; zipBtn.textContent = 'Gerando ZIP…';
+    const zip = new JSZip();
+    const used = new Set();
+    for (const it of done) {
+      let n = it.result.name, k = 1;
+      while (used.has(n)) n = it.result.name.replace(/(\.\w+)?$/, '_' + (++k) + '$1');
+      used.add(n);
+      zip.file(n, it.result.blob);
+    }
+    const out = await zip.generateAsync({type:'blob', compression:'STORE'});
+    download(out, 'videos_limpos.zip');
+    zipBtn.textContent = 'Baixar tudo (ZIP)'; zipBtn.disabled = false;
+  };
+
+  clearBtn.onclick = () => { items = []; list.innerHTML = ''; refresh(); };
+
+  input.onchange = () => { addFiles(input.files); input.value = ''; };
+  ['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+})();
+</script>
+</body>
+</html>

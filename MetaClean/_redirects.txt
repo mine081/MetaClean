@@ -1,0 +1,3 @@
+# A página de criar conta agora é a página inicial
+/cadastro.html  /  301
+/cadastro       /  301

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Esqueci minha senha — MetaClean</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="mc-header"></div>
+<main class="auth">
+  <h1>Esqueci minha senha</h1>
+  <p class="sub">Digite o e-mail da sua conta. Vamos enviar uma mensagem com um link para você criar uma nova senha.</p>
+  <div>
+    <form id="f" novalidate>
+      <div class="msg" role="alert"></div>
+      <label>E-mail
+        <input name="email" type="email" autocomplete="email" required autofocus>
+      </label>
+      <button type="submit">Enviar link de redefinição</button>
+    </form>
+  </div>
+  <div class="links">
+    <a href="/login.html">Voltar para entrar</a>
+    <a href="/">Criar conta</a>
+  </div>
+</main>
+<div id="mc-footer"></div>
+<script src="/config.js"></script>
+<script type="module" src="/app.js"></script>
+<script type="module">
+  const form = document.getElementById('f');
+  MC.bindForm(form, 'forgot', {
+    extra: b => !b.email ? 'Digite seu e-mail.' : '',
+    onOk: (_, show) => {
+      show('Se esse e-mail tiver uma conta, enviamos uma mensagem com o link para redefinir a senha. Confira também a caixa de spam.', 'ok');
+      form.querySelector('button[type=submit]').textContent = 'Mensagem enviada';
+    },
+  });
+</script>
+</body>
+</html>
